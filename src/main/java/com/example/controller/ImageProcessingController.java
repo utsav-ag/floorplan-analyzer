@@ -14,7 +14,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-import software.amazon.awssdk.core.ResponseBytes;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.textract.TextractClient;
@@ -22,8 +21,6 @@ import software.amazon.awssdk.services.textract.model.Block;
 import software.amazon.awssdk.services.textract.model.DetectDocumentTextRequest;
 import software.amazon.awssdk.services.textract.model.DetectDocumentTextResponse;
 import software.amazon.awssdk.services.s3.S3Client;
-import software.amazon.awssdk.services.s3.model.GetObjectRequest;
-import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
@@ -33,6 +30,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -102,7 +100,7 @@ public ResponseEntity<String> handleFileUpload(@RequestParam("file") MultipartFi
 
     // Return a JSON message  
     return new ResponseEntity<>(s3ImageUrl, HttpStatus.OK);  
-} 
+}
 
 @PostMapping("/process-image")  
 public ResponseEntity<?> processImage(@RequestBody ImageRequest request) {  
@@ -116,15 +114,16 @@ public ResponseEntity<?> processImage(@RequestBody ImageRequest request) {
         String id = extractedValue.get("objectKey");
         String s3ImageUrl = "https://" + bucketName + ".s3." + region + ".amazonaws.com/" + id;
         
-         // ------------- NEW: Check if result already exists -----------  
+         // ------------- Check if result already exists -----------  
          AnalysisResult analysisResult = getAnalysisResultFromDynamoDB(id, modelName);  
          if (analysisResult != null) {  
              // Found in DB, just return it!  
-             Map<String, Object> responseBody = new HashMap<>();  
-             responseBody.put("id", extractedValue.get("fileHash"));  
-             responseBody.put("imageUrl", s3ImageUrl);  
-             responseBody.put("analysisResult", analysisResult);  
-             responseBody.put("source", "dynamodb-cache");  
+             StoredImageResponse responseBody = new StoredImageResponse();  
+             responseBody.setId(extractedValue.get("fileHash"));  
+             responseBody.setImageUrl(s3ImageUrl);
+             responseBody.setModelUsed(modelName);
+             responseBody.setScannedAt(Instant.now().toString());
+             responseBody.setAnalysisResult(analysisResult);
              return ResponseEntity.ok(responseBody);  
          }  
         
@@ -145,10 +144,12 @@ public ResponseEntity<?> processImage(@RequestBody ImageRequest request) {
         putRecordToDynamoDB(id, s3ImageUrl, analysisResult, modelName);  
 
         // 4. Return the result  
-        Map<String, Object> responseBody = new HashMap<>();  
-        responseBody.put("id", extractedValue.get("fileHash"));  
-        responseBody.put("imageUrl", s3ImageUrl);  
-        responseBody.put("analysisResult", analysisResult);  
+        StoredImageResponse responseBody = new StoredImageResponse();
+        responseBody.setId(extractedValue.get("fileHash"));  
+        responseBody.setImageUrl(s3ImageUrl);
+        responseBody.setModelUsed(modelName);
+        responseBody.setScannedAt(Instant.now().toString());
+        responseBody.setAnalysisResult(analysisResult);  
 
         return ResponseEntity.ok(responseBody);  
     } catch (Exception e) {  
@@ -499,6 +500,43 @@ private AnalysisResult getAnalysisResultFromDynamoDB(String floorplanId, String 
     } catch (Exception e) {  
         throw new RuntimeException("Error reading DynamoDB: " + e.getMessage(), e);  
     }  
-} 
+}
+
+@GetMapping("/extractedImagedata")
+public ResponseEntity<List<StoredImageResponse>> getAllStoredImages() {
+    try {
+        // Query DynamoDB for all stored images
+        List<StoredImageResponse> images = queryAllImagesFromDynamoDB();
+        return ResponseEntity.ok(images);
+    } catch (Exception e) {
+        e.printStackTrace();
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(null);
+    }
+}
+
+private List<StoredImageResponse> queryAllImagesFromDynamoDB() throws Exception {
+    
+    ScanRequest scanRequest = ScanRequest.builder()
+            .tableName(dynamoTable)
+            .build();
+    
+    List<StoredImageResponse> response = new ArrayList<>();
+    
+    for (Map<String, AttributeValue> item : dynamoDbClient.scan(scanRequest).items()) {
+        StoredImageResponse image = new StoredImageResponse();
+        image.setId(item.get("floorplanId").s());
+        image.setImageUrl(item.get("imageUrl").s());
+        image.setModelUsed(item.get("modelName").s());
+        image.setScannedAt(item.get("timestamp").s());
+        
+        AnalysisResult analysis = objectMapper.readValue(item.get("analysisResult").s(), AnalysisResult.class);
+        image.setAnalysisResult(analysis);
+        
+        response.add(image);
+    }
+    
+    return response;
+}
 
 }
