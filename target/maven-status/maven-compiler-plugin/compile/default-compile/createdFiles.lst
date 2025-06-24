@@ -1,0 +1,9 @@
+com/example/model/AnalysisResult.class
+com/example/App.class
+com/example/model/ImageRequest.class
+com/example/model/AdditionalInfo.class
+com/example/model/LayoutCharacteristics.class
+com/example/config/CorsConfig.class
+com/example/model/BoothInfo.class
+com/example/model/Coordinates.class
+com/example/controller/ImageProcessingController.class
